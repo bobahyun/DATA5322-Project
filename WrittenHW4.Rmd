@@ -1,0 +1,455 @@
+---
+title: "Written HW 4 - Wine Quality"
+author: "Malia Cortez, Ava Delanty"
+date: "2023-05-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(dplyr)
+library(RSpectra)
+library(plotly)
+library(gridExtra)
+library(softImpute)
+library(readr)
+library(ggplot2)
+#For decision Trees
+library(tree)
+library(randomForest)
+library(gbm)
+```
+
+## Load in Data
+
+```{r chunk1}
+red <- read.csv('../data/winequality-red.csv',sep=',')
+white <-  read.csv('../data/winequality-white.csv',sep=',')
+```
+
+## Exploratory Analysis 
+
+```{r chunk2}
+red
+```
+
+## Models
+
+### Unsupervised:
+
+The predictor variable is quality 
+```{r}
+unique(red$quality)
+```
+Let's assign 3-4 as low quality wine, 5-6 as average quality wine, and 7-8 as high quality wine. 
+
+PCA:
+```{r}
+# red wine X input
+# get counts for each quality category
+quality.counts <- red %>% 
+  group_by(quality) %>%
+  count()
+
+ggplot(quality.counts, mapping = aes(quality, n)) +
+  geom_col() +
+  labs(x = "Quality", y = "Count", title = "Count of Observations for Category of Quality")
+
+X <- red %>% select(-quality)
+
+# use PCA with scaled data
+pr.out <- prcomp(X, scale = TRUE)
+
+# get percent variance explained by principal components
+pve <- pr.out$sdev^2 / sum(pr.out$sdev^2)
+
+plot(pve, ylab = "Proportion of Variance Explained", xlab = "Principal Component", main = "Variance by PC in Red Wine Data")
+
+# plot cumulative variance explained by principal components
+# we can see that the first 6 principal components account for ~80% of the variance explained
+plot(cumsum(pve), xlab = "Principal Component",
+    ylab = "Cumulative Proportion of Variance Explained",
+    ylim = c(0, 1), type = "b", main = "Cumulative Proportion of Variance Explained by Principal Component")
+
+# get most weighted variables
+## for the first PC, fixed acidity, citric acid, pH, and density are all highly weighted
+## pH is negatively weighted, which we can see when we remove the absolute value
+pr.out$rotation[,1] %>% sort(decreasing=TRUE)
+pr.out$rotation[,1] %>% abs() %>% sort(decreasing=TRUE)
+
+## second PC
+## total sulfur dioxide, free sulfur dioxide, volatile acidity, residual sugar all highly weighted
+pr.out$rotation[,2] %>% abs() %>% sort(decreasing = TRUE)
+
+# plot along first two principal components
+# very slight positive relationship, but clusters are ambiguous
+toplot <- data.frame(pr.out$x)
+quality <- red$quality
+levels(quality) <- c(levels(quality))
+ggplot(toplot, mapping = aes(toplot[,1], toplot[,2], col = as.factor(quality))) +
+  geom_point() +
+  labs(x = "Principal Component 1",  y = "Principal Component 2", title = "First Two Principal Components and Quality", color = "Quality")
+
+# plot most important original variables
+# most important for PC1: fixed acidity
+# most important for PC2: total sulfur dioxide
+# little to no relationship
+ggplot(data = red, mapping = aes(x = fixed.acidity, y = total.sulfur.dioxide, color = as.factor(quality))) +
+  geom_point() +
+  labs(x = "Fixed Acidity", y = "Total Sulfur Dioxide", title = "Fixed Acidity vs. Total Sulfur Dioxide")
+```
+
+
+
+K-means clustering:
+Red Wine omitting NAs and deselecting quality predictor variable and scaling the data frame
+```{r}
+red_data = red %>% na.omit() %>% select(-c(quality))
+scaled <- scale(red_data)
+```
+
+Check to see how many clusters we should perform:
+```{r}
+wss<-(nrow(scaled)-1)*sum(apply(scaled,2,var))
+for(i in 1:12) wss[i]<-sum(kmeans(scaled,centers=i)$withinss)
+plot(1:12,wss,type='b',xlab="Number of Clusters",ylab='Within groups sum of squares')
+```
+```{r}
+k=1:12
+wss = c()
+for(i in 1:length(k)){
+  set.seed(4)
+  km.out <- kmeans(scaled,k[i],nstart=20)
+  wss[i] = km.out$tot.withinss
+}
+plot(k,wss)
+```
+
+
+```{r}
+set.seed(2)
+km.out <- kmeans(scaled, 6, nstart = 20)
+plot(scaled[,11],scaled[,10],col = (km.out$cluster + 1),
+    main = "K-Means Clustering Results with K = 6",
+    xlab = "alcohol", ylab = "sulphates", pch = 20, cex = 2)
+km.out$tot.withinss
+```
+The total within group sum of squares is 9358.224
+
+Plotting the proportion of variance explained using the d vector. 
+```{r}
+S <- svd(scaled)
+plot(S$d/sum(S$d), type ="b",ylab = "Normalized Singular Values",
+     main = "Singular Values Plot of Red Wine Data")
+```
+Perform k-means on the transformed locations of the data in the singular vector space:
+```{r}
+set.seed(1000)
+sv.km <- kmeans(S$u, 6, nstart = 20)
+plot(scaled[,11],scaled[,10],col = (sv.km$cluster + 1),
+     main = "K-Means Clustering Results with K = 6",
+    xlab = "alcohol", ylab = "sulphates", pch = 20, cex = 2)
+sv.km$tot.withinss
+```
+7.856126
+
+```{r}
+set.seed(1000)
+sv.km <- kmeans(S$u, 6, nstart = 20)
+plot(scaled[,1],scaled[,4],col = (sv.km$cluster + 1),
+     main = "K-Means Clustering Results with K = 6",
+    xlab = "fixed.acidity", ylab = "residual.sugar", pch = 20, cex = 2)
+sv.km$tot.withinss
+```
+Create a confusion matrix between the VD-based clusters and the wine quality:
+```{r}
+confusion_matrix <- table(sv.km$cluster, red$quality)
+confusion_matrix 
+```
+
+Exploratory analysis using clusters:
+```{r}
+R = red %>% na.omit()
+R$quality <- as.factor(R$quality)
+head(R)
+```
+```{r}
+ggplot(R, aes(x=fixed.acidity, y=density, color=quality)) + geom_point()
+```
+```{r}
+set.seed(2)
+red.km <- kmeans(select(R, -c(quality)), 6, nstart = 20)
+R$clusters = as.factor(red.km $cluster)
+ggplot(R, aes(x=fixed.acidity, y=density, color=clusters, shape=quality)) + geom_point()
+```
+```{r}
+Rscale <-  R %>% select(-c(clusters,quality)) %>% scale()
+S <- svd(Rscale)
+plot(S$u[,1], S$u[,8], col=R$quality)
+```
+Now we apply k-means on the locations of the data in singular vector space. We plot the clusters, agnostic to the quality of the wine. This seems closer to the quality seperations:
+```{r}
+set.seed(2)
+sv.km <- kmeans(S$u, 6, nstart = 20)
+R$svclusters = as.factor(sv.km$cluster)
+ggplot(R, aes(x=fixed.acidity, y=density, color=svclusters)) + geom_point()
+```
+
+
+
+Hierarchical Clustering:
+```{r}
+hc.complete <- hclust(dist(red_data), method = "complete")
+hc.average <- hclust(dist(red_data), method = "average")
+hc.single <- hclust(dist(red_data), method = "single")
+hc.ward <- hclust(dist(red_data), method = "ward.D2")
+```
+
+```{r}
+par(mfrow = c(1, 3))
+plot(hc.complete, main = "Complete Linkage",
+    xlab = "", sub = "", cex = .9)
+plot(hc.average, main = "Average Linkage",
+    xlab = "", sub = "", cex = .9)
+plot(hc.single, main = "Single Linkage",
+    xlab = "", sub = "", cex = .9)
+plot(hc.ward, main = "Ward Linkage",
+    xlab = "", sub = "", cex = .9)
+```
+```{r}
+xsc <- scale(red_data)
+hc.complete2 <- hclust(dist(xsc), method = "complete")
+plot(hclust(dist(xsc), method = "complete"),
+    main = "Hierarchical Clustering with Scaled Features")
+```
+```{r}
+xsc  <- matrix(rnorm(30 * 3), ncol = 3)
+dd <- as.dist(1 - cor(t(xsc)))
+plot(hclust(dd, method = "complete"),
+    main = "Complete Linkage with Correlation-Based Distance",
+    xlab = "", sub = "")
+```
+
+
+### Supervised Model: 
+
+Decision Trees:
+Multi-class
+
+Creating categories for quality :
+```{r}
+red_data2 <- red%>%
+  mutate(quality = factor(quality , levels = c(3,4,5,6,7,8),labels = c("low quality","low quality","average quality","average quality","high quality","high quality")))
+red_data2 <- red_data2 %>%
+  mutate(quality = relevel(quality, ref = "average quality"))
+
+levels(red_data2$quality) <- c("low quality", "average quality", "high quality")
+```
+```{r}
+levels(red_data2$quality)
+```
+
+
+```{r}
+tree.red <- tree(quality~.-quality,red_data2)
+summary(tree.red)
+```
+
+We get a training error rate of .15 or 15% 
+
+```{r}
+plot(tree.red)
+text(tree.red,cex = 0.6,pretty=0)
+```
+```{r}
+tree.red
+```
+
+Let's make a train and test set:
+```{r}
+#training and test data 
+set.seed(1)
+train <- sample(nrow(red_data2), nrow(red_data2)*.7)
+red.train <- red_data2[train,]
+red.test <- red_data2[-train,]
+```
+```{r}
+tree.red2 <- tree(quality~.-quality,red_data2, subset = train)
+summary(tree.red2)
+```
+```{r}
+plot(tree.red2)
+text(tree.red2,cex = 0.6, pretty = 0)
+```
+```{r}
+tree.red2
+```
+```{r}
+set.seed(1)
+test <- red_data2$quality[-train]
+tree.pred <- predict(tree.red2, red.test,
+    type = "class")
+table <- table(tree.pred, test)
+table
+mean(tree.pred == test)
+accuracy_Test <- sum(diag(table)) / sum(table)
+print(paste('Accuracy for test', accuracy_Test))
+```
+Pruning the tree:
+```{r}
+set.seed(2)
+cv.red <- cv.tree(tree.red2, FUN = prune.tree)
+names(cv.red)
+```
+```{r}
+cv.red
+```
+```{r}
+par(mfrow = c(1, 2))
+plot(cv.red$size, cv.red$dev, type = "b")
+plot(cv.red$k, cv.red$dev, type = "b")
+```
+```{r}
+optimal_K <- which.min(cv.red$dev)
+prune.red <- prune.tree(tree.red2, best = optimal_K)
+plot(prune.red)
+text(prune.red,cex = 0.6, pretty = 0)
+```
+```{r}
+summary(prune.red)
+```
+
+```{r}
+tree.pred <- predict(prune.red, red.test,
+    type = "class")
+table(tree.pred, test)
+mean(tree.pred == test)
+accuracy_Test <- sum(diag(table)) / sum(table)
+```
+Pruning did worse with a slightly lower accuracy of 82.91%
+
+Bagging and random forest:
+
+```{r}
+bag.red <- randomForest(quality ~ .-quality,red_data2, subset = train, mtry = 12, importance = TRUE)
+bag.red
+```
+
+```{r}
+yhat.bag <- predict(bag.red, newdata = red_data2[-train,])
+yhat.bag.num <- as.numeric(yhat.bag)
+test.num <- as.numeric(test)
+
+# Check for any non-numeric values in yhat.bag.num or test.num
+any(!is.na(yhat.bag.num) & !is.numeric(yhat.bag.num))
+any(!is.na(test.num) & !is.numeric(test.num))
+
+# Calculate the mean squared error
+mean((yhat.bag.num - test.num)^2)
+```
+```{r}
+importance(bag.red)
+```
+```{r}
+varImpPlot(bag.red,main = "Variable Importance Plot for Wine Quality")
+```
+Alcohol, Sulphates, and volatile.acidity are the important variables. 
+
+```{r}
+plot(bag.red)
+```
+
+```{r}
+red_data2
+```
+
+Boosting:
+
+```{r}
+#training and test data 
+set.seed(1)
+train <- sample(nrow(red), nrow(red)*.7)
+red.train <- red[train,]
+red.test <- red[-train,]
+```
+
+```{r}
+set.seed(1)
+boost.red <- gbm(quality ~ .-quality, data = red[train, ],
+    distribution = "gaussian", n.trees = 1000,
+    interaction.depth = 4)
+summary(boost.red)
+```
+```{r}
+testred <- red[-train,"quality"]
+yhat.boost <- predict(boost.red,
+    newdata = red[-train, ], n.trees = 1000)
+mean((yhat.boost - testred)^2)
+```
+Changing shrinkage:
+```{r}
+set.seed(1)
+boost.red <- gbm(quality ~ .-quality, data = red[train, ],
+    distribution = "gaussian", n.trees = 1000,
+    interaction.depth = 4, shrinkage = .01,verbose = F)
+summary(boost.red)
+yhat.boost <- predict(boost.red,
+    newdata = red[-train, ], n.trees = 1000)
+mean((yhat.boost - testred)^2)
+```
+Importance: The "alcohol" content of the wine is a critical factor in determining its quality. Wines with higher alcohol content tend to be associated with higher quality or vice versa.
+
+Discrimination: The "alcohol" variable effectively differentiates between different quality levels of wines. Wines with lower alcohol content are more likely to be classified as low quality, while wines with higher alcohol content are more likely to be classified as high quality.
+
+Correlation: The "alcohol" content is strongly correlated with other important predictors or aspects related to wine quality. Its high vrel.inf value suggests that it captures a significant portion of the variability in the response variable.
+
+
+Changing num of trees:
+```{r}
+set.seed(1)
+boost.red <- gbm(quality ~ .-quality, data = red[train, ],
+    distribution = "gaussian", n.trees = 100,
+    interaction.depth = 4)
+summary(boost.red)
+yhat.boost <- predict(boost.red,
+    newdata = red[-train, ], n.trees = 100)
+mean((yhat.boost - testred)^2)
+```
+By lowering the number of trees to 100, it lowered the MSE significantly but the other boosting model performed better. Changing shrinkage value improved the model with 1000 tree iterations. 
+
+Boosting performed better than bagging and random forest ! 
+
+Boosting from the 3 classes of quality and not as numeric:
+```{r}
+set.seed(1)
+boost.red <- gbm(quality ~ .-quality, data = red_data2[train, ],
+    distribution = "gaussian", n.trees = 1000,
+    interaction.depth = 4)
+summary(boost.red)
+```
+Again we can see that alcohol and volatile acidity are the two most important variables. 
+
+Test MSE:
+```{r}
+yhat.boost <- predict(boost.red,
+    newdata = red_data2[-train, ], n.trees = 1000)
+mean((yhat.boost - test.num)^2)
+```
+
+Changing shrinkage:
+```{r}
+set.seed(1)
+boost.red <- gbm(quality ~ .-quality, data = red_data2[train, ],
+    distribution = "gaussian", n.trees = 500,
+    interaction.depth = 4)
+summary(boost.red)
+yhat.boost <- predict(boost.red,
+    newdata = red_data2[-train, ], n.trees = 500)
+mean((yhat.boost - test.num)^2)
+```
+It performed slightly better when changing the number of trees. 
+
+Boosting performed better than bagging and random forest ! 
+
+
+
